@@ -1,3 +1,131 @@
 ## High-Throughput-Protein-Design
-A User-Friendly Computational Workflow for High-Throughput Protein Design: Integrating RFD, MPNN, and AlphaFold
-Designing de novo protein binders is a critical area of interest in modern protein engineering, often requiring manual oversight and validation. Our user-friendly pipeline integrates RFdiffusion (RFD), ProteinMPNN (MPNN), and AlphaFold (AF) into a streamlined framework, enabling the automated generation of highly tunable, application-specific binders. Central to this pipeline is its tunable design, allowing users to optimize parameters for specific research needs, and a novel algorithmic sorter that evaluates candidate binders using structural metrics such as predicted Local Distance Difference Test (pLDDT) scores and Root Mean Square Deviation (RMSD).The pipeline’s versatility is demonstrated across multiple applications, including the design of Flu A20 binders, Vav1/GEFH1 inhibitors, and COVID-19 epitope scaffolds. By automating traditionally time-consuming steps and incorporating robust quality assessment, this pipeline addresses critical bottlenecks in protein binder design. Its ability to scale and adapt to diverse applications offers an accessible and efficient tool throughout the protein engineering landscape.
+Title: A User-Friendly Computational Workflow for High-Throughput Protein Design: Integrating RFD, MPNN, and AlphaFold.
+
+Abstract: Designing de novo protein binders is a critical area of interest in modern protein engineering, often requiring manual oversight and validation. Our user-friendly pipeline integrates RFdiffusion (RFD), ProteinMPNN (MPNN), and AlphaFold (AF) into a streamlined framework, enabling the automated generation of highly tunable, application-specific binders. Central to this pipeline is its tunable design, allowing users to optimize parameters for specific research needs, and a novel algorithmic sorter that evaluates candidate binders using structural metrics such as predicted Local Distance Difference Test (pLDDT) scores and Root Mean Square Deviation (RMSD).The pipeline’s versatility is demonstrated across multiple applications, including the design of Flu A20 binders, Vav1/GEFH1 inhibitors, and COVID-19 epitope scaffolds. By automating traditionally time-consuming steps and incorporating robust quality assessment, this pipeline addresses critical bottlenecks in protein binder design. Its ability to scale and adapt to diverse applications offers an accessible and efficient tool throughout the protein engineering landscape.
+
+Features
+Integrated Workflow: Combines RFdiffusion, ProteinMPNN, and AlphaFold for seamless protein binder design.
+Customizability: Supports tunable parameters for specific design goals.
+High-Throughput: Automates iterative steps, enabling efficient processing of large datasets.
+Quality Metrics: Includes structural evaluations like pLDDT and RMSD for binder selection.
+Prerequisites
+Software Requirements
+Linux OS
+CUDA Toolkit (v12.4 or compatible)
+Python (v3.9+)
+Singularity (for containerized environments)
+jq (JSON parsing tool)
+AlphaFold Databases: Ensure the required databases are downloaded and accessible.
+Python Dependencies
+Install dependencies via Conda:
+
+bash
+Copy code
+conda create -n protein_design_env python=3.9
+conda activate protein_design_env
+pip install torch==2.0.1 numpy pandas scipy
+Pipeline Structure
+Components
+Input Preparation: Specify the input PDB file and configuration settings in config_test.json.
+RFdiffusion:
+Generates initial binder designs.
+Uses specified contigs and hotspots for targeted designs.
+ProteinMPNN:
+Processes RFdiffusion outputs and generates diverse sequences.
+Allows customization of backbone noise and sampling parameters.
+AlphaFold:
+Validates structural integrity and stability of binders.
+Generates confidence metrics (e.g., pLDDT).
+File Structure
+plaintext
+Copy code
+pipeline/
+├── config_test.json       # Configuration file for the pipeline
+├── config_test.sh         # Main script to execute the pipeline
+├── RFdiffusion/           # RFdiffusion executable and models
+├── ProteinMPNN/           # ProteinMPNN scripts and helper functions
+├── AlphaFold/             # AlphaFold executables and databases
+├── helper_scripts/        # Auxiliary Python scripts (e.g., process_fasta.py)
+└── outputs/               # Outputs organized by timestamp and stage
+Usage
+Step 1: Edit Configuration File
+Edit config_test.json to specify:
+
+Base directory paths
+Input PDB file path
+RFdiffusion, MPNN, and AlphaFold parameters
+Example:
+
+json
+Copy code
+{
+  "base_dir": "/path/to/working/directory",
+  "input_pdb": "/path/to/input.pdb",
+  "conda_env": "protein_design_env",
+  "rfdiffusion": {
+    "pwd": "/path/to/RFdiffusion",
+    "sif_path": "/path/to/rfdiffusion.sif",
+    "model_path": "/path/to/models",
+    "num_designs": 2,
+    "contigs": "[B192-416/0 B420-508/0 100-150]",
+    "hotspots": "[B212,B320,B327,B331]",
+    "tmp_dir": "/tmp",
+    "cache_dir": "/cache"
+  },
+  "proteinmpnn": {
+    "script_path": "/path/to/protein_mpnn_run.py",
+    "helper_scripts_path": "/path/to/helper_scripts/",
+    "num_sequences": 15,
+    "backbone_noise": 0.1,
+    "sampling_temp": 0.15,
+    "seed": 37,
+    "batch_size": 1,
+    "modified_chain": "A",
+    "constant_chain": "B",
+    "chains_to_design": "A B",
+    "process_count": 3
+  },
+  "alphafold": {
+    "pwd": "/path/to/alphafold",
+    "sif_path": "/path/to/alphafold_latest.sif",
+    "database_path": "/path/to/alphafold_dbs",
+    "model_preset": "multimer",
+    "gpu_relax": true,
+    "max_template_date": "2023-12-31"
+  }
+}
+Step 2: Run the Pipeline
+Submit the job using Slurm:
+
+bash
+Copy code
+sbatch config_test.sh config_test.json
+Step 3: Monitor Outputs
+Outputs are organized by timestamp in the base_dir specified in config_test.json.
+Key directories include:
+RFD/outputs/: RFdiffusion-generated designs.
+MPNN/outputs/: Sequences generated by ProteinMPNN.
+AF/outputs/: Structures and metrics generated by AlphaFold.
+Troubleshooting
+Common Issues
+FileNotFoundError: Ensure paths in config_test.json are correct and accessible.
+AlphaFold ValueError:
+Check FASTA file formatting.
+Validate AlphaFold database paths.
+Debugging
+Enable debug logs in the scripts:
+
+bash
+Copy code
+set -x  # Enables verbose logging
+Example Applications
+Flu A20 Loop Binders: Design binders targeting specific Flu A20 epitopes.
+Vav1/GEFH1 Inhibitors: Generate inhibitors for critical signaling pathways.
+COVID-19 Epitope Scaffolds: Develop scaffolds for immune response studies.
+Contributions
+Feel free to contribute improvements via pull requests or by opening issues in the repository. Feedback is welcome!
+
+License
+This pipeline is open-source and distributed under the MIT License.
+
+For additional questions or support, contact hsb26@duke.edu.
