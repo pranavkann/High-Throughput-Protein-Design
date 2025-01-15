@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=config_test
-#SBATCH --output=slurm-configtest_%j.out
-#SBATCH --error=slurm-configtest_%j.err
+#SBATCH --job-name=pipeline_script
+#SBATCH --output=slurm-pipeline_script_%j.out
+#SBATCH --error=slurm-pipeline_script_%j.err
 #SBATCH -p dhvi-gpu --gres=gpu:1
 #SBATCH --mem=118430M
 #SBATCH --exclusive
