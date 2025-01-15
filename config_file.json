@@ -1,5 +1,5 @@
 {
-  "base_dir": "/cwork/hsb26/pipeline/config_test",
+  "base_dir": "/cwork/hsb26/pipeline/config",
   "conda_env": "protein_design_env",
   "input_pdb": "/cwork/hsb26/pipeline/Vav_DHPH_nt.pdb",
   "rfdiffusion": {
