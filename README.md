@@ -159,8 +159,11 @@ Feel free to contribute improvements via pull requests or by opening issues in t
 ---
 
 ## License
-This pipeline is open-source and distributed under the MIT License.
+This workflow is open-source and distributed under the MIT License.
 
 ---
+
+## Acknowledgments
+This workflow was created in the Azoitei Lab, led by PI Mihai Azoitei, in collaboration with lab members Fabiola Vacca and Dan Marston at Duke University. We are grateful for their scientific input and ongoing support, which were instrumental in shaping and refining this pipeline.
 
 For additional questions or support, contact [hsb26@duke.edu](mailto:hsb26@duke.edu).
