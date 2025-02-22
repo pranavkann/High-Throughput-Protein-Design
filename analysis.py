@@ -55,11 +55,7 @@ def extract_plddt_scores(ranking_debug_json_path):
         results.append((name_col, object_name, model_key, ranked_file, plddt_val))
     return results
 
-
 def calculate_rmsd(ref_pdb, af_pdb):
-    import MDAnalysis as mda
-    from MDAnalysis.analysis.rms import rmsd
-
     try:
         ref_u = mda.Universe(ref_pdb)
         af_u  = mda.Universe(af_pdb)
@@ -67,65 +63,119 @@ def calculate_rmsd(ref_pdb, af_pdb):
         print(f"Error loading PDB files: {e}")
         return "N/A"
 
+    # Select all backbone atoms in each Universe
+    ref_atoms = ref_u.select_atoms('backbone')
+    af_atoms  = af_u.select_atoms('backbone')
+
+    if len(ref_atoms) == 0:
+        print(f"Error: No backbone atoms found in reference PDB: {ref_pdb}")
+        return "N/A"
+    if len(af_atoms) == 0:
+        print(f"Error: No backbone atoms found in AlphaFold PDB: {af_pdb}")
+        return "N/A"
+
+    # First attempt: same-length direct RMSD
+    if len(ref_atoms) == len(af_atoms):
+        try:
+            # Align & compute RMSD
+            rmsd_value = rmsd(
+                af_atoms.positions,
+                ref_atoms.positions,
+                center=True,
+                superposition=True
+            )
+            return rmsd_value  # Single numeric RMSD
+        except Exception as e:
+            print(f"Error calculating single RMSD: {e}")
+            # Continue to chain-based approach
+    
+    # If we get here, attempt a per-chain approach
+    print(f"Warning: Backbone atom mismatch or error. Attempting per-chain RMSD for {ref_pdb} vs {af_pdb}...")
+
     chain_rmsd = {}
     rmsd_values = []
 
-    # Iterate over each chain (using its segid) in the reference structure.
-    for seg in ref_u.segments:
-        chain_id = seg.segid.strip()
+    # We'll iterate over "segments" in the reference Universe
+    for ref_seg in ref_u.segments:
+        chain_id = ref_seg.segid.strip()  # or use: str(ref_seg.ix)
         if not chain_id:
-            print("Warning: Encountered a chain with no segid; skipping.")
+            # If segid is empty, try default to the segment index
+            chain_id = f"chain_{ref_seg.ix}"
+
+        # Select backbone for this chain in reference
+        ref_chain_atoms = ref_seg.atoms.select_atoms("backbone")
+        if len(ref_chain_atoms) == 0:
             continue
 
-        # Select backbone atoms (N, CA, C, O) from the reference and model for this chain.
-        ref_atoms = ref_u.select_atoms(f"segid {chain_id} and backbone")
-        af_atoms  = af_u.select_atoms(f"segid {chain_id} and backbone")
-        if len(ref_atoms) == 0 or len(af_atoms) == 0:
-            print(f"Warning: Backbone atoms not found for chain {chain_id} in one of the structures.")
+        # In the AF structure, try matching the same segid or chain
+        # Because sometimes the chain label might be in segid or chain
+        af_chain_atoms = af_u.select_atoms(f"segid {chain_id} and backbone")
+        if len(af_chain_atoms) == 0:
+            af_chain_atoms = af_u.select_atoms(f"chain {chain_id} and backbone")
+
+        # If no match in the AF Universe, skip
+        if len(af_chain_atoms) == 0:
+            print(f"  No chain {chain_id} found in AF PDB.")
             continue
 
-        # Build a mapping for each chain: keys are (resid, atom name) for backbone atoms.
-        def get_backbone_mapping(atoms):
-            mapping = {}
-            for res in atoms.residues:
-                for atom in res.atoms:
-                    if atom.name in ["N", "CA", "C", "O"]:
-                        mapping[(res.resid, atom.name)] = atom.index
-            return mapping
+        if len(ref_chain_atoms) == len(af_chain_atoms):
+            # If they match directly, do a standard RMSD
+            try:
+                c_rmsd = rmsd(
+                    af_chain_atoms.positions,
+                    ref_chain_atoms.positions,
+                    center=True,
+                    superposition=True
+                )
+                chain_rmsd[chain_id] = c_rmsd
+                rmsd_values.append(c_rmsd)
+                continue
+            except Exception as e:
+                print(f"  Error in chain {chain_id} RMSD: {e}")
+                continue
+        else:
+            # Fallback: Map atoms by (resid, atom name)
+            # This is to handle residue numbering or partial chain mismatches
+            def build_mapping(atoms):
+                # Key: (resid, atom_name), Value: atom index
+                return {(res.resid, atom.name): atom.index 
+                        for res in atoms.residues for atom in res.atoms}
+            
+            ref_map = build_mapping(ref_chain_atoms)
+            af_map  = build_mapping(af_chain_atoms)
+            # Intersection of keys
+            common_keys = sorted(set(ref_map.keys()) & set(af_map.keys()))
+            if not common_keys:
+                continue  # no overlapping atoms
 
-        ref_mapping = get_backbone_mapping(ref_atoms)
-        af_mapping  = get_backbone_mapping(af_atoms)
-        common_keys = set(ref_mapping.keys()).intersection(set(af_mapping.keys()))
-        if not common_keys:
-            print(f"Warning: No common backbone atoms found for chain {chain_id}.")
-            continue
+            ref_indices = [ref_map[k] for k in common_keys]
+            af_indices  = [af_map[k] for k in common_keys]
+            try:
+                ref_positions = ref_u.atoms[ref_indices].positions
+                af_positions  = af_u.atoms[af_indices].positions
+                c_rmsd = rmsd(
+                    af_positions,
+                    ref_positions,
+                    center=True,
+                    superposition=True
+                )
+                chain_rmsd[chain_id] = c_rmsd
+                rmsd_values.append(c_rmsd)
+            except Exception as e:
+                print(f"  Error in chain {chain_id} mapped RMSD: {e}")
+                continue
 
-        # Ensure a consistent order.
-        common_keys = sorted(common_keys)
-        ref_indices = [ref_mapping[k] for k in common_keys]
-        af_indices  = [af_mapping[k] for k in common_keys]
-
-        ref_positions = ref_u.atoms[ref_indices].positions
-        af_positions  = af_u.atoms[af_indices].positions
-
-        if ref_positions.shape[0] == 0 or af_positions.shape[0] == 0:
-            print(f"Warning: No positions available for chain {chain_id} after matching.")
-            continue
-
-        try:
-            # Perform centering and superposition alignment and then compute RMSD.
-            chain_rmsd_val = rmsd(af_positions, ref_positions, center=True, superposition=True)
-            chain_rmsd[chain_id] = chain_rmsd_val
-            rmsd_values.append(chain_rmsd_val)
-        except Exception as e:
-            print(f"Error calculating RMSD for chain {chain_id}: {e}")
-            continue
-
-    if not rmsd_values:
+    if rmsd_values:
+        average_rmsd = float(np.mean(rmsd_values))
+        # Return a dict with chain-level RMSDs and the average
+        return {
+            "chain_rmsd": chain_rmsd,
+            "average_rmsd": average_rmsd
+        }
+    else:
+        print(f"  No RMSD computed for any chain in {ref_pdb} vs {af_pdb}.")
         return "N/A"
 
-    avg_rmsd = sum(rmsd_values) / len(rmsd_values)
-    return {"chain_rmsd": chain_rmsd, "average_rmsd": avg_rmsd}
 
 def extract_ptm_iptm(ranking_debug_filepath, model_identifier):
     pTM = np.nan
