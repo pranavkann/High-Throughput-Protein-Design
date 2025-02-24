@@ -31,11 +31,6 @@ from reportlab.lib.units import inch
 # Helper: Kabsch Algorithm
 ###############################################################################
 def kabsch(P, Q):
-    """
-    Compute the optimal rotation matrix that minimizes RMSD between P and Q.
-    P and Q are (N,3) arrays.
-    Returns rotation matrix R and translation vector t.
-    """
     # Center the coordinates
     P_cent = P - np.mean(P, axis=0)
     Q_cent = Q - np.mean(Q, axis=0)
@@ -51,10 +46,7 @@ def kabsch(P, Q):
 # Helper: Iterative RMSD with outlier rejection (mimicking PyMOL align)
 ###############################################################################
 def iterative_rmsd(model_coords, ref_coords, tol=0.1, max_iter=5):
-    """
-    Iteratively align model_coords to ref_coords and remove outliers.
-    Returns final RMSD and the indices of atoms used in the final alignment.
-    """
+
     # Start with all indices
     indices = np.arange(model_coords.shape[0])
     prev_rmsd = np.inf
@@ -68,7 +60,6 @@ def iterative_rmsd(model_coords, ref_coords, tol=0.1, max_iter=5):
         distances = np.linalg.norm(model_aligned - ref_coords[indices], axis=1)
         current_rmsd = np.sqrt(np.mean(distances**2))
         
-        # Define a cutoff: for example, reject atoms whose distance is above (mean + std)
         cutoff = np.mean(distances) + np.std(distances)
         new_indices = indices[distances <= cutoff]
         # If no change or RMSD converged, break
@@ -78,7 +69,6 @@ def iterative_rmsd(model_coords, ref_coords, tol=0.1, max_iter=5):
         prev_rmsd = current_rmsd
         indices = new_indices
 
-    # Final RMSD calculation on the refined set
     final_rmsd = rmsd(model_coords[indices], ref_coords[indices], center=True, superposition=True)
     return final_rmsd, indices
 
@@ -107,7 +97,7 @@ def calculate_rmsd_multimer_robust(ref_pdb, model_pdb, exclude_chains=None):
                     mapping[(r.resindex, a.name)] = a.index
         return mapping
         
-    # Filter out unwanted chains
+   
     ref_segs = [seg for seg in ref_u.segments if seg.segid.strip() not in exclude_chains]
     model_segs = [seg for seg in model_u.segments if seg.segid.strip() not in exclude_chains]
 
@@ -118,7 +108,6 @@ def calculate_rmsd_multimer_robust(ref_pdb, model_pdb, exclude_chains=None):
     n_ref = len(ref_segs)
     n_model = len(model_segs)
 
-    # Initialize cost matrix for Hungarian assignment
     cost_matrix = np.full((n_ref, n_model), 1e6)
     rmsd_matrix = [[None]*n_model for _ in range(n_ref)]
 
@@ -148,7 +137,6 @@ def calculate_rmsd_multimer_robust(ref_pdb, model_pdb, exclude_chains=None):
             model_coords = model_u.atoms[model_indices].positions
 
             try:
-                # Use iterative RMSD calculation to mimic PyMOL align
                 chain_rmsd_val, _ = iterative_rmsd(model_coords, ref_coords, tol=0.1, max_iter=5)
                 cost_matrix[i, j] = chain_rmsd_val
                 rmsd_matrix[i][j] = chain_rmsd_val
@@ -487,7 +475,7 @@ def run_pipeline(args):
     print(f"PAE => {pae_tsv}")
     print(f"Clashes => {clash_tsv}")
 
-    # (D) Merge all metrics
+    # (D) Merge
     print("\nMerging all metrics ...")
     merged_all = plddt_df.merge(rmsd_df, on=["Name", "Rank"], how="left", suffixes=("", "_rmsd"))
     if "Object_Name_rmsd" in merged_all.columns:
