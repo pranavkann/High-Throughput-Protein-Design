@@ -28,6 +28,61 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 
 ###############################################################################
+# Helper: Kabsch Algorithm
+###############################################################################
+def kabsch(P, Q):
+    """
+    Compute the optimal rotation matrix that minimizes RMSD between P and Q.
+    P and Q are (N,3) arrays.
+    Returns rotation matrix R and translation vector t.
+    """
+    # Center the coordinates
+    P_cent = P - np.mean(P, axis=0)
+    Q_cent = Q - np.mean(Q, axis=0)
+    H = np.dot(P_cent.T, Q_cent)
+    U, S, Vt = np.linalg.svd(H)
+    d = np.linalg.det(np.dot(Vt.T, U.T))
+    D = np.diag([1, 1, d])
+    R = np.dot(Vt.T, np.dot(D, U.T))
+    t = np.mean(Q, axis=0) - np.dot(np.mean(P, axis=0), R)
+    return R, t
+
+###############################################################################
+# Helper: Iterative RMSD with outlier rejection (mimicking PyMOL align)
+###############################################################################
+def iterative_rmsd(model_coords, ref_coords, tol=0.1, max_iter=5):
+    """
+    Iteratively align model_coords to ref_coords and remove outliers.
+    Returns final RMSD and the indices of atoms used in the final alignment.
+    """
+    # Start with all indices
+    indices = np.arange(model_coords.shape[0])
+    prev_rmsd = np.inf
+
+    for iteration in range(max_iter):
+        # Compute optimal rotation & translation on current set
+        R, t = kabsch(model_coords[indices], ref_coords[indices])
+        # Apply transformation
+        model_aligned = (model_coords[indices] - np.mean(model_coords[indices], axis=0)) @ R + np.mean(ref_coords[indices], axis=0)
+        # Compute per-atom distances after alignment
+        distances = np.linalg.norm(model_aligned - ref_coords[indices], axis=1)
+        current_rmsd = np.sqrt(np.mean(distances**2))
+        
+        # Define a cutoff: for example, reject atoms whose distance is above (mean + std)
+        cutoff = np.mean(distances) + np.std(distances)
+        new_indices = indices[distances <= cutoff]
+        # If no change or RMSD converged, break
+        if len(new_indices) == len(indices) or abs(prev_rmsd - current_rmsd) < tol:
+            indices = new_indices
+            break
+        prev_rmsd = current_rmsd
+        indices = new_indices
+
+    # Final RMSD calculation on the refined set
+    final_rmsd = rmsd(model_coords[indices], ref_coords[indices], center=True, superposition=True)
+    return final_rmsd, indices
+
+###############################################################################
 # 1) Chain-based RMSD 
 ###############################################################################
 def calculate_rmsd_multimer_robust(ref_pdb, model_pdb, exclude_chains=None):
@@ -43,15 +98,15 @@ def calculate_rmsd_multimer_robust(ref_pdb, model_pdb, exclude_chains=None):
         print(f"[calculate_rmsd_multimer_robust] Error loading PDB files: {e}")
         return "N/A"
 
-    # Helper to map (resid, atom_name) -> atom_index for backbone atoms
+    # Helper to map (resindex, atom_name) -> atom_index for backbone atoms
     def get_mapping(atoms):
         mapping = {}
         for r in atoms.residues:
             for a in r.atoms:
                 if a.name in ["N", "CA", "C", "O"]:
-                    mapping[(r.resid, a.name)] = a.index
+                    mapping[(r.resindex, a.name)] = a.index
         return mapping
-
+        
     # Filter out unwanted chains
     ref_segs = [seg for seg in ref_u.segments if seg.segid.strip() not in exclude_chains]
     model_segs = [seg for seg in model_u.segments if seg.segid.strip() not in exclude_chains]
@@ -81,7 +136,7 @@ def calculate_rmsd_multimer_robust(ref_pdb, model_pdb, exclude_chains=None):
                 continue
             model_map = get_mapping(model_atoms)
 
-            # Find common (resid, atom_name)
+            # Find common (resindex, atom_name)
             common_keys = sorted(set(ref_map.keys()) & set(model_map.keys()))
             if not common_keys:
                 continue
@@ -93,15 +148,14 @@ def calculate_rmsd_multimer_robust(ref_pdb, model_pdb, exclude_chains=None):
             model_coords = model_u.atoms[model_indices].positions
 
             try:
-                chain_rmsd_val = rmsd(model_coords, ref_coords,
-                                      center=True, superposition=True)
+                # Use iterative RMSD calculation to mimic PyMOL align
+                chain_rmsd_val, _ = iterative_rmsd(model_coords, ref_coords, tol=0.1, max_iter=5)
                 cost_matrix[i, j] = chain_rmsd_val
                 rmsd_matrix[i][j] = chain_rmsd_val
             except Exception as e:
                 print(f"Error computing RMSD for chain {ref_chain_id} vs {model_chain_id}: {e}")
                 continue
 
-   
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
     chain_matches = []
@@ -121,8 +175,7 @@ def calculate_rmsd_multimer_robust(ref_pdb, model_pdb, exclude_chains=None):
             "average_rmsd": avg_rmsd
         }
     else:
-        # fallback
-        return _fallback_rmsd(ref_u, model_u)
+	return _fallback_rmsd(ref_u, model_u)
 
 def _fallback_rmsd(ref_u, model_u):
     """
@@ -138,7 +191,6 @@ def _fallback_rmsd(ref_u, model_u):
             val = rmsd(model_bb.positions, ref_bb.positions, center=True, superposition=True)
             return {"fallback_rmsd": val}
         else:
-          
             n = min(len(ref_bb), len(model_bb))
             val = rmsd(model_bb.positions[:n], ref_bb.positions[:n],
                        center=True, superposition=True)
@@ -151,7 +203,6 @@ def _fallback_rmsd(ref_u, model_u):
 # 2) pLDDT Extraction
 ###############################################################################
 def extract_plddt_scores(ranking_debug_json_path):
-    
     results = []
     if not os.path.isfile(ranking_debug_json_path):
         return results
@@ -181,7 +232,6 @@ def extract_plddt_scores(ranking_debug_json_path):
 # 3) pTM/ipTM Extraction
 ###############################################################################
 def extract_ptm_iptm(ranking_debug_filepath, model_identifier):
-   
     pTM = np.nan
     ipTM = np.nan
     if not os.path.isfile(ranking_debug_filepath):
@@ -205,7 +255,6 @@ def extract_ptm_iptm(ranking_debug_filepath, model_identifier):
 # 4) PAE Extraction
 ###############################################################################
 def extract_average_pae(pae_json_filepath):
-
     average_pae = np.nan
     if not os.path.isfile(pae_json_filepath):
         return average_pae
@@ -217,7 +266,6 @@ def extract_average_pae(pae_json_filepath):
         print(f"Error reading PAE JSON file {pae_json_filepath}: {e}")
         return average_pae
 
-    # 2 possible structures: direct dict or list containing dict
     if isinstance(pae_data, dict):
         if "predicted_aligned_error" in pae_data:
             matrix = pae_data["predicted_aligned_error"]
@@ -267,7 +315,6 @@ def calculate_clash_score(pdb_filepath, distance_threshold=2.0):
 
     total_clashes = 0
     for i, j in pairs:
-        # skip if same residue
         if residues[i][1] == residues[j][1]:
             continue
         total_clashes += 1
@@ -311,7 +358,7 @@ def run_pipeline(args):
     plddt_df.to_csv(plddt_tsv, sep="\t", index=False)
     print(f"pLDDT => {plddt_tsv}")
 
-    # (B) RMSD: chain-based Hungarian approach
+    # (B) RMSD
     print("\nCalculating RMSD for each reference vs. AF predictions ...")
     rmsd_results = []
     for ref_file in os.listdir(rf_base_dir):
@@ -321,15 +368,13 @@ def run_pipeline(args):
         ref_name_noext = os.path.splitext(ref_file)[0]
         print(f"\nReference PDB: {ref_filepath}")
         
-        for root, dirs, files in os.walk(af_base_dir):
-            # Check if root folder matches
+       	for root, dirs, files in os.walk(af_base_dir):
             relative = os.path.relpath(root, af_base_dir)
             top_part = relative.split(os.sep)[0]
           
             if top_part.lower() != ref_name_noext.lower():
                 continue
 
-            # For each ranked_*.pdb in this root:
             for f in files:
                 if f.startswith("ranked_") and f.endswith(".pdb"):
                     model_path = os.path.join(root, f)
@@ -340,12 +385,10 @@ def run_pipeline(args):
                     except:
                         rank = -1
 
-              
                     folder_two_up = os.path.basename(os.path.dirname(root))
                     name_col = folder_two_up + "/" + os.path.basename(root)
                     print(f"  => {model_path} (Rank {rank})")
 
-                    
                     rmsd_val = calculate_rmsd_multimer_robust(ref_filepath, model_path)
                   
                     if isinstance(rmsd_val, dict):
@@ -363,7 +406,6 @@ def run_pipeline(args):
                             final_rmsd = "N/A"
                             chain_details_str = "N/A"
                     else:
-                        # "N/A"
                         final_rmsd = "N/A"
                         chain_details_str = "N/A"
 
@@ -373,7 +415,7 @@ def run_pipeline(args):
                         f.replace(".pdb", ""),
                         rank,
                         final_rmsd,
-                        chain_details_str
+                        chain_details_str                    
                     ))
 
     rmsd_df = pd.DataFrame(rmsd_results, columns=[
@@ -401,11 +443,9 @@ def run_pipeline(args):
                 folder_two_up = os.path.basename(os.path.dirname(root))
                 name_col = folder_two_up + "/" + os.path.basename(root)
 
-                # ranking_debug.json
                 ranking_debug_path = os.path.join(root, "ranking_debug.json")
                 if not os.path.exists(ranking_debug_path):
                     continue
-                # pae
                 model_id = f"model_{rank_num+1}_multimer_v3_pred_0"
                 pae_json = os.path.join(root, f"pae_model_{rank_num+1}_multimer_v3_pred_0.json")
 
@@ -416,7 +456,6 @@ def run_pipeline(args):
                 ptm_iptm_entries.append({
                     "Name": name_col,
                     "Object_Name": os.path.basename(root),
-                      GNU nano 5.6.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       analysis.py                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
                     "Model_Name": model_name,
                     "Rank": rank_num,
                     "pTM (%)": round(pTM_val, 2) if not math.isnan(pTM_val) else "N/A",
@@ -448,7 +487,7 @@ def run_pipeline(args):
     print(f"PAE => {pae_tsv}")
     print(f"Clashes => {clash_tsv}")
 
-    # (D) Merge all
+    # (D) Merge all metrics
     print("\nMerging all metrics ...")
     merged_all = plddt_df.merge(rmsd_df, on=["Name", "Rank"], how="left", suffixes=("", "_rmsd"))
     if "Object_Name_rmsd" in merged_all.columns:
@@ -510,7 +549,6 @@ def run_report(config, pdf_name="analysis_report.pdf"):
       4) Table of additional metrics (Clashes, PAE, pTM, ipTM)
       5) BONUS: Table of chain-based RMSD details for the top 20
     """
-
     import sys
     import io
     import plotly.express as px
@@ -537,39 +575,30 @@ def run_report(config, pdf_name="analysis_report.pdf"):
         print(f"Error reading pLDDT TSV: {e}")
         sys.exit(1)
 
-    # re-extract Rank
     if "Ranked_File" in plddt_df.columns:
         plddt_df["Rank"] = plddt_df["Ranked_File"].str.extract(r"ranked_(\d+)\.pdb").astype(int)
 
-    # pLDDT in [0,1], scale to 100
     if plddt_df["pLDDT_Score"].max() <= 1.0:
         plddt_df["pLDDT_Score"] = plddt_df["pLDDT_Score"] * 100
 
-    # 2) Load RMSD data
     try:
         rmsd_df = pd.read_csv(rmsd_file, sep="\t")
     except Exception as e:
         print(f"Error reading RMSD TSV: {e}")
         sys.exit(1)
 
-    # Merge pLDDT & RMSD
     merged = pd.merge(plddt_df, rmsd_df, on=["Name", "Rank"], how="inner")
     if merged.empty:
         print("No overlapping (Name,Rank) between pLDDT and RMSD. Stopping PDF.")
         return
 
-    # Convert numeric
     merged["pLDDT_Score"] = pd.to_numeric(merged["pLDDT_Score"], errors="coerce")
     merged["RMSD"] = pd.to_numeric(merged["RMSD"], errors="coerce")
-
-    # Drop rows missing pLDDT or RMSD
     merged.dropna(subset=["pLDDT_Score", "RMSD"], inplace=True)
 
-    # Sort for top 20
     merged_sorted = merged.sort_values(["pLDDT_Score", "RMSD"], ascending=[False, True])
     top_20 = merged_sorted.head(20).reset_index(drop=True)
 
-    # 3) Build scatter plots
     rank_colors = {"0": "blue", "1": "green", "2": "orange", "3": "red", "4": "purple"}
 
     fig_all = px.scatter(
@@ -578,11 +607,8 @@ def run_report(config, pdf_name="analysis_report.pdf"):
         y="RMSD",
         color=merged["Rank"].astype(str),
         color_discrete_map=rank_colors,
-        hover_data={
-            "Name": True, "Model_Name": True,
-            "pLDDT_Score":":.2f","RMSD":":.2f","Chain_RMSD_Details":True
-        },
-	title="pLDDT vs RMSD (All Predictions)",
+        hover_data={"Name": True, "Model_Name": True, "pLDDT_Score":":.2f", "RMSD":":.2f","Chain_RMSD_Details":True},
+        title="pLDDT vs RMSD (All Predictions)",
         labels={"pLDDT_Score":"pLDDT","RMSD":"RMSD(Å)","color":"Rank"}
     )
     fig_all.update_layout(template="plotly_white")
@@ -593,11 +619,8 @@ def run_report(config, pdf_name="analysis_report.pdf"):
         y="RMSD",
         color=top_20["Rank"].astype(str),
         color_discrete_map=rank_colors,
-        hover_data={
-            "Name": True, "Model_Name": True,
-            "pLDDT_Score":":.2f","RMSD":":.2f","Chain_RMSD_Details":True
-        },
-	title="pLDDT vs RMSD (Top 20)",
+        hover_data={"Name": True, "Model_Name": True, "pLDDT_Score":":.2f", "RMSD":":.2f","Chain_RMSD_Details":True},
+        title="pLDDT vs RMSD (Top 20)",
         labels={"pLDDT_Score":"pLDDT","RMSD":"RMSD(Å)","color":"Rank"}
     )
     fig_top20.update_layout(template="plotly_white")
@@ -609,7 +632,6 @@ def run_report(config, pdf_name="analysis_report.pdf"):
         print(f"Plotly figure conversion error: {e}")
         return
 
-    # 4) Table of top 20 (pLDDT, RMSD)
     table_data_top20 = [["#","Name","Model_Name","pLDDT","RMSD"]]
     for i, row in top_20.iterrows():
         table_data_top20.append([
@@ -620,17 +642,13 @@ def run_report(config, pdf_name="analysis_report.pdf"):
             f"{row['RMSD']:.2f}"
         ])
 
-    # 5) Merge other metrics (clash, pae, ptm/iptm) from final_merged TSV
     try:
         final_merged_df = pd.read_csv(final_merged_file, sep="\t")
     except Exception as e:
         print(f"Error reading final merged TSV: {e}")
         return
 
-    # top 20 by merging final_merged_df with top_20 on (Name, Rank).
     top20_extra = pd.merge(top_20, final_merged_df, on=["Name","Rank"], suffixes=("", "_merged"), how="left")
-
-    # Build a short table of (Name,Model_Name,Clashes,Average_PAE,pTM,ipTM)
     metric_table_data = [["Name","Model_Name","Clashes","Average PAE","pTM (%)","ipTM (%)"]]
     for _, row in top20_extra.iterrows():
         c = row.get("Clashes","N/A")
@@ -650,18 +668,6 @@ def run_report(config, pdf_name="analysis_report.pdf"):
             fmt(ipTMval)
         ])
 
-    # 6) Table of chain-based RMSD details for the top 20
-    #  
-    #chain_table_data = [["Name","Model_Name","Chain_RMSD_Details"]]
-    #for _, row in top_20.iterrows():
-    #    ch_details = row.get("Chain_RMSD_Details","N/A")
-    #    chain_table_data.append([
-    #        row["Name"],
-    #        row["Model_Name"],
-    #        ch_details
-    #    ])
-
-    # --- Build PDF ---
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import letter
@@ -672,12 +678,10 @@ def run_report(config, pdf_name="analysis_report.pdf"):
     elements = []
     styles = getSampleStyleSheet()
 
-    # Title
     title_par = Paragraph(f"Analysis Report (AF dir: {af_dir})", styles["Title"])
     elements.append(title_par)
     elements.append(Spacer(1, 12))
 
-    # Table: top 20
     heading_top20 = Paragraph("Top 20 by pLDDT & RMSD", styles["Heading2"])
     elements.append(heading_top20)
     elements.append(Spacer(1, 12))
@@ -697,7 +701,6 @@ def run_report(config, pdf_name="analysis_report.pdf"):
     elements.append(tbl_top20)
     elements.append(Spacer(1, 24))
 
-    # Scatter: All
     scatter_all_heading = Paragraph("Scatter Plot: All Predictions", styles["Heading2"])
     elements.append(scatter_all_heading)
     elements.append(Spacer(1, 12))
@@ -708,7 +711,6 @@ def run_report(config, pdf_name="analysis_report.pdf"):
     elements.append(img_all)
     elements.append(Spacer(1, 24))
 
-    # Scatter: Top 20
     scatter_top20_heading = Paragraph("Scatter Plot: Top 20", styles["Heading2"])
     elements.append(scatter_top20_heading)
     elements.append(Spacer(1, 12))
@@ -718,7 +720,6 @@ def run_report(config, pdf_name="analysis_report.pdf"):
     elements.append(img_t20)
     elements.append(Spacer(1, 24))
 
-    # Table: additional metrics
     heading_metrics = Paragraph("Additional Metrics (Top 20)", styles["Heading2"])
     elements.append(heading_metrics)
     elements.append(Spacer(1, 12))
@@ -738,27 +739,6 @@ def run_report(config, pdf_name="analysis_report.pdf"):
     elements.append(tbl_metrics)
     elements.append(Spacer(1, 24))
 
-    # Table: chain-based RMSD details
-    #chain_heading = Paragraph("Chain-Based RMSD Details (Top 20)", styles["Heading2"])
-    #elements.append(chain_heading)
-    #elements.append(Spacer(1, 12))
-
-    #tbl_chain = Table(chain_table_data, colWidths=[130,130,250])
-    #style_chain = TableStyle([
-    #    ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#008080")),
-    #    ("TEXTCOLOR", (0,0), (-1,0), colors.whitesmoke),
-    #    ("ALIGN",(0,0),(-1,-1),"LEFT"),
-    #    ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
-    #    ("FONTSIZE",(0,0),(-1,0),12),
-    #    ("BOTTOMPADDING",(0,0),(-1,0),8),
-    #    ("BACKGROUND",(0,1),(-1,-1),colors.HexColor("#D1EEEE")),
-    #    ("GRID",(0,0),(-1,-1),1,colors.black),
-    #])
-    #tbl_chain.setStyle(style_chain)
-    #elements.append(tbl_chain)
-    #elements.append(Spacer(1, 24))
-
-    # Build PDF
     try:
         doc.build(elements)
         print(f"\nPDF report generated at {pdf_filepath}\n")
@@ -773,29 +753,21 @@ def main():
     parser.add_argument("--rf_base_dir", required=True, help="Path to reference PDBs")
     parser.add_argument("--af_base_dir", required=True, help="Path to AlphaFold output directories")
     parser.add_argument("--output_dir", required=True, help="Output directory for TSVs/PDF")
-
-    # TSVs
     parser.add_argument("--plddt_tsv", default="plddt.tsv")
     parser.add_argument("--rmsd_tsv", default="rmsd.tsv")
     parser.add_argument("--ptm_iptm_tsv", default="ptm_iptm.tsv")
     parser.add_argument("--pae_tsv", default="pae.tsv")
     parser.add_argument("--clash_tsv", default="clash.tsv")
     parser.add_argument("--final_merged_tsv", default="final_merged.tsv")
-
-    # Directory for top 20
     parser.add_argument("--downselected_dir", default="top20_pdbs", help="Subfolder for top 20 PDBs")
-
-    # PDF name
     parser.add_argument("--pdf_name", default="analysis_report.pdf", help="PDF filename")
 
     args = parser.parse_args()
 
-    # Run the pipeline
     config = run_pipeline(args)
-
-    # Generate PDF
     run_report(config, pdf_name=args.pdf_name)
 
 if __name__ == "__main__":
     main()
+
 
